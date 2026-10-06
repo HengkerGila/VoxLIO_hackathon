@@ -1,0 +1,43 @@
+# VoxLIO v0.1 core on the DE10-Nano (Cyclone V SE, 5CSEBA6U23I7).
+# Synthesises the core alone, with every data port as a virtual pin, to get
+# resource and fMAX figures. The HPS/Avalon wrapper is a later step.
+#
+#   cd quartus && quartus_sh --flow compile voxlio
+#
+# Written without access to Quartus; not yet run.
+
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY voxlio_core
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+
+# Sources; the package must come first.
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_round_sat.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_transform.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_grid.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_search.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_jacobian.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_accumulate.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/voxlio_core.sv
+set_global_assignment -name SDC_FILE voxlio.sdc
+
+# The core's buses are far wider than the board's user I/O; keep them virtual.
+set_instance_assignment -name VIRTUAL_PIN ON -to scan_*
+set_instance_assignment -name VIRTUAL_PIN ON -to map_*
+set_instance_assignment -name VIRTUAL_PIN ON -to start
+set_instance_assignment -name VIRTUAL_PIN ON -to num_points*
+set_instance_assignment -name VIRTUAL_PIN ON -to pose_*
+set_instance_assignment -name VIRTUAL_PIN ON -to busy
+set_instance_assignment -name VIRTUAL_PIN ON -to done
+set_instance_assignment -name VIRTUAL_PIN ON -to h_flat*
+set_instance_assignment -name VIRTUAL_PIN ON -to g_flat*
+set_instance_assignment -name VIRTUAL_PIN ON -to cost*
+set_instance_assignment -name VIRTUAL_PIN ON -to inlier_count*
+set_instance_assignment -name VIRTUAL_PIN ON -to processed_count*
+set_instance_assignment -name VIRTUAL_PIN ON -to rejected_count*
+set_instance_assignment -name VIRTUAL_PIN ON -to status*
+
+set_global_assignment -name TIMING_ANALYZER_MULTICORNER_ANALYSIS ON

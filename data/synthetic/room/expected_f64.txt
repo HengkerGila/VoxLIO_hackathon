@@ -1,0 +1,32 @@
+inlier_count 13811
+processed_count 13950
+rejected_count 139
+status 33
+H 0 0x1.b4bedb0ff5d52p+15
+H 1 0x1.2908e93a68110p+10
+H 2 0x1.b67438af7bfb6p+15
+H 3 0x1.2b2eeedda857bp+10
+H 4 0x1.3694696f0b008p+10
+H 5 0x1.312fb3bea4e0fp+14
+H 6 0x1.11944e624c43fp+7
+H 7 0x1.27cf8d0304bcbp+11
+H 8 -0x1.561cf9b11950ep+4
+H 9 0x1.d2a75231e7d3fp+10
+H 10 -0x1.f6fc59e6909ecp+10
+H 11 -0x1.73678bfd22e5ep+3
+H 12 -0x1.2e76ced346795p+3
+H 13 0x1.7ef3d29c09292p+3
+H 14 0x1.d5baf607ffc52p+10
+H 15 -0x1.df5ce3d2bacbfp+9
+H 16 -0x1.1efcd54e2544ep+8
+H 17 -0x1.f4bbab44f429ap+6
+H 18 -0x1.9fe5c1c3b6ce5p+7
+H 19 -0x1.14d8368206de8p+7
+H 20 0x1.3a8bb70125773p+13
+g 0 0x1.173caa2997351p+9
+g 1 -0x1.41ccdb174a85cp+8
+g 2 0x1.ca05293fcdda3p+7
+g 3 0x1.0f4f807739a28p+6
+g 4 -0x1.859da9ec3460ap+6
+g 5 0x1.4f55fbebb5eb8p+8
+cost 0x1.06b0e24d63842p+5

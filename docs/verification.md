@@ -96,7 +96,8 @@ LSB on either side.
   with a non-square grid would close this.
 - **Synthetic data only.** No real LiDAR frame has been run (milestone M6).
 - **Interface level.** The RTL is driven through its raw ports; there is no
-  bus wrapper or host driver yet.
+  bus wrapper or host driver yet. The planned wrapper and how it will be
+  verified are in [host_interface.md](host_interface.md).
 - **Fixed point.** The fixed-point build is simulated with the open-source
   `ap_fixed` headers under g++, not with the headers shipped in Vitis HLS.
   Accumulator overflow is argued from ranges (24 integer bits needed, 32

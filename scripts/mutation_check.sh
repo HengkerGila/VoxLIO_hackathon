@@ -135,7 +135,7 @@ if command -v verilator >/dev/null; then
     mutate_rtl "rtl: transform truncates instead of rounding" voxlio_transform.sv 's/\.ROUND(ROUND_TO_NEAREST)/.ROUND(0)/'
     mutate_rtl "rtl: tie-break <= in search"                  voxlio_search.sv 's/(f_abs < best_abs)/(f_abs <= best_abs)/'
     mutate_rtl "rtl: search ignores grid bounds"              voxlio_search.sv 's/    in_grid = (cx >= 0)/    in_grid = 1; if (0) in_grid = (cx >= 0)/'
-    mutate_rtl "rtl: grid upper bound inclusive"              voxlio_grid.sv 's/(f\[a\] < LIMIT_RAW\[a\])/(f[a] <= LIMIT_RAW[a])/'
+    mutate_rtl "rtl: grid upper bound inclusive"              voxlio_grid.sv 's/(f\[a\] < limit_raw\[a\])/(f[a] <= limit_raw[a])/'
     mutate_rtl "rtl: Jacobian sign"                           voxlio_jacobian.sv "s/diff\[i\] <= DIFF_W'(prod\[2\*i\]) - DIFF_W'(prod\[2\*i+1\]);/diff[i] <= DIFF_W'(prod[2*i+1]) - DIFF_W'(prod[2*i]);/"
     mutate_rtl "rtl: accumulator packing"                     voxlio_accumulate.sv 's/pjj\[row + col \* (col + 1) \/ 2\] <= j\[row\] \* j\[col\];/pjj[row + col * (col + 1) \/ 2] <= j[col] * j[col];/'
     mutate_rtl "rtl: threshold not strict"                    voxlio_core.sv 's/(sat_abs(best_r) < THRESHOLD_RAW)/(sat_abs(best_r) <= THRESHOLD_RAW)/'

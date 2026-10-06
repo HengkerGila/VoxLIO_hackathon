@@ -55,6 +55,10 @@ The host must supply a valid rotation matrix, a scan buffer holding at least
 `num_points` points, and a map in which `valid` is set only for descriptors
 with a unit normal.
 
+This is the interface of the HLS function. The hand-written RTL has plain
+ports instead ([rtl.md](rtl.md)); how the host will reach them on the
+DE10-Nano is specified in [host_interface.md](host_interface.md).
+
 ## Data definitions
 
 Every piece of data the core reads, hands from one stage to the next and

@@ -12,7 +12,10 @@ which solves the 6 x 6 system.
 stage with a flowchart. The target board is a DE10-Nano (Intel Cyclone V
 SoC), so the deliverable core is hand-written SystemVerilog under `rtl/`,
 described in [docs/rtl.md](docs/rtl.md); the HLS C++ under `hls/` is the
-bit-accurate model it is verified against.
+bit-accurate model it is verified against. How the host CPU will reach the
+core on the board is specified in
+[docs/host_interface.md](docs/host_interface.md); that wrapper is designed
+but not built.
 
 ## Status
 
@@ -150,9 +153,11 @@ nothing has been synthesized.
 4. **Fixed-point tolerance.** The gate (30 % of the estimator's own 1-sigma
    noise) is a choice; the reasoning is in
    [docs/experiment_log.md](docs/experiment_log.md).
-5. **Host interface.** The RTL exposes plain write ports and registers; the
-   Avalon-MM wrapper for the HPS bridge and the Linux-side driver are not
-   written. The on-chip scan buffer takes 2.4 Mbit of M10K at
+5. **Host interface.** The RTL exposes plain write ports and registers. The
+   wrapper for the HPS bridge is designed
+   ([docs/host_interface.md](docs/host_interface.md)): a 32-bit register map
+   on the lightweight HPS-to-FPGA bridge. Neither the wrapper nor the
+   Linux-side driver is written. The on-chip scan buffer takes 2.4 Mbit of M10K at
    `MAX_POINTS = 32768`; streaming points from the HPS instead is the
    alternative if the fit is tight.
 
@@ -169,5 +174,5 @@ tests/        Python tests
 scripts/      vector export, comparison, sweep, benchmark, mutation check
 data/         generated test vectors
 results/      generated reports
-docs/         as-built architecture, mathematics, RTL, verification, experiment log
+docs/         as-built architecture, mathematics, RTL, verification, experiment log, host interface design
 ```

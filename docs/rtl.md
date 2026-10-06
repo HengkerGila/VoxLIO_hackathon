@@ -204,7 +204,8 @@ M10K (scan 2.36 Mbit, map 1.04 Mbit). If that is too much, `MAX_POINTS` in
 ## Not done
 
 - No Avalon-MM or AXI wrapper and no HPS integration; the testbench drives
-  the ports directly.
+  the ports directly. The wrapper is designed in
+  [host_interface.md](host_interface.md) but not written.
 - No measured clock frequency or resource count.
 - Scan points are buffered on chip; streaming them from the HPS would free
   most of the memory.

@@ -7,48 +7,133 @@ flowchart is Mermaid; GitHub and VS Code render it.
 ## Data flow
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 30, "subGraphTitleMargin": {"top": 4, "bottom": 14}}}}%%
 flowchart TD
+    %% Layout rules (they keep the rows horizontal on Mermaid 10 to 12):
+    %% link a row only as a whole box, and only to its neighbours inside the
+    %% same parent box; cross a box border only between plain nodes; no
+    %% arrow may loop back.
     subgraph BEFORE["Host CPU, before the scan"]
-        A1["Map point cloud"] --> A2["Bucket by voxel, centroid + PCA normal"]
-        A2 --> A3[("Voxel map: c_k, n_k, valid_k")]
-        A4["IMU / previous pose"] --> A5["Predicted pose R, t"]
+        MAP["Map build"]
+        SCAN["LiDAR scan"]
+        POSE["Pose prediction"]
     end
 
-    subgraph CORE["VoxLIO core, once per scan point q"]
-        B1["1  p = R q + t"] --> B2{"2  inside grid?"}
-        B2 -- no --> X1["rejected: out of grid"]
-        B2 -- yes --> B3["3  i = floor((p - m) / s), address k"]
-        B3 --> B4["4  enumerate the 27 neighbour voxels"]
-        B4 --> B5["5  read c_k, n_k, valid_k"]
-        B5 --> B6["6  r_k = n_k . (p - c_k)"]
-        B6 --> B7["7  keep the smallest abs(r_k)"]
-        B7 --> B8{"8  any usable candidate?"}
-        B8 -- no --> X2["rejected: no candidate"]
-        B8 -- yes --> B10{"10  abs(r) below T ?"}
-        B10 -- no --> X3["rejected: outlier"]
-        B10 -- yes --> B9["9  J = [p x n, n]"]
-        B9 --> B11["11  H += J^T J, g += J^T r, cost += r^2"]
+    subgraph CORE["VoxLIO core"]
+        VM[("Voxel map")]
+        SB[("Scan buffer")]
+        PIN[/"Pose input"/]
+        subgraph LOCATE["Locate the point"]
+            direction LR
+            S1["1 Point transform"] --> S2{{"2 Bounds check"}} --> S3["3 Voxel index"]
+        end
+        subgraph SEARCH["Find its plane"]
+            direction LR
+            S4["4 Neighbour<br/>enumeration"] --> S5["5 Voxel read"] --> S6["6 Plane candidate<br/>evaluation"] --> S7["7 Best plane<br/>selection"]
+        end
+        subgraph CONSTRAINT["Form its constraint"]
+            direction LR
+            S8{{"8 Residual"}} --> S10{{"10 Inlier test"}} --> S9["9 Jacobian"]
+        end
+        S11["11 Accumulation"]
+        SB -- "q" --> LOCATE
+        PIN -- "R, t" --> LOCATE
+        VM -- "c_k, n_k, valid_k" --> SEARCH
+        LOCATE -- "p, i" --> SEARCH
+        SEARCH -- "p, n, r" --> CONSTRAINT
+        CONSTRAINT -- "J, r" --> S11
     end
+
+    OUT[/"H, g, cost, counters"/]
 
     subgraph AFTER["Host CPU, after the scan"]
-        C1["unpack H (21 values to 6 x 6)"] --> C2["checks: inliers, finite, condition number"]
-        C2 --> C3["solve H delta = -g"]
-        C3 --> C4["R = Exp(w) R,  t = Exp(w) t + tau"]
-        C4 --> C5{"converged?"}
+        direction LR
+        U["Unpack"] --> HC["Health<br/>checks"] --> SV["Solve"] --> PU["Pose<br/>update"] --> CT{{"Convergence<br/>test"}}
     end
 
-    A3 --> B5
-    A5 --> B1
-    B11 --> C1
-    C5 -- no --> A5
-    C5 -- yes --> C6["pose estimate"]
+    MAP -- write --> VM
+    SCAN -- write --> SB
+    POSE -- set --> PIN
+    S11 --> OUT --> AFTER
+    AFTER -- converged --> EST(["Pose estimate"])
+    AFTER -- not yet --> AGAIN(["Same scan again,<br/>new pose"])
 ```
 
-The core runs stages 1 to 11 for every point and keeps only the running
-sums. The host closes the loop: it solves a 6 x 6 system, moves the pose and,
-if the step was not small, sends the same scan again with the new pose. The
-inlier test (stage 10) is applied before the Jacobian (stage 9) in the code,
-because a rejected point needs no Jacobian; the result is the same.
+Each host block feeds one input of the core: the map build writes the voxel
+map, the LiDAR scan is written into the scan buffer, and the predicted pose
+is set on the pose input. All of this happens before the core starts, and
+the core only reads them. In the RTL the two buffers are RAMs inside the
+core ([rtl.md](rtl.md)); the HLS build reads them through AXI master ports
+([architecture.md](architecture.md)).
+
+The core then runs stages 1 to 11 for every point of the scan: stages 1 to 3
+locate the point in the grid, stages 4 to 7 find the plane it lies on,
+stages 8 to 10 turn that match into a constraint, and stage 11 adds it to
+the running sums. The label on an arrow is the data that travels along it.
+Only the sums and the point counters go back to the host.
+
+Hexagons are tests: a point that fails stage 2, 8 or 10 is counted as
+rejected and goes no further. The inlier test (stage 10) is applied before
+the Jacobian (stage 9) in the code, because a rejected point needs no
+Jacobian; the result is the same.
+
+The host closes the loop: it solves a 6 x 6 system, moves the pose and, if
+the step was not small, runs the same scan again with the new pose.
+
+### Stage guide
+
+Each box in the flowchart, what it computes, and where it is derived. The
+symbols are defined under [Notation](#notation).
+
+**VoxLIO core** (stages 1 to 11 run once per scan point $q$)
+
+| Stage | Name | Computes | Section |
+|---:|---|---|---|
+| | **Inputs** | | |
+| | Voxel map | holds $c_k$, $n_k$, $\text{valid}_k$ for all 8192 voxels; written by the host, read by stage 5 | [What "plane" means](#what-plane-means-in-stages-4-to-7) |
+| | Scan buffer | holds the scan points $q$; written by the host, read once per point | |
+| | Pose input | the predicted pose $R, t$; set by the host, constant during the scan | |
+| | **Locate the point** | | |
+| 1 | Point transform | $p = R\,q + t$ | [Stage 1](#stage-1-point-transform) |
+| 2 | Bounds check | $0 \le f_a < N_a$ with $f = (p - m)/s$, else rejected | [Stages 2 and 3](#stages-2-and-3-bounds-check-and-voxel-index) |
+| 3 | Voxel index | $i_a = \lfloor f_a \rfloor$, address $k = i_z N_x N_y + i_y N_x + i_x$ | [Stages 2 and 3](#stages-2-and-3-bounds-check-and-voxel-index) |
+| | **Find its plane** | | |
+| 4 | Neighbour enumeration | the 27 voxels $i + d$, $d \in \lbrace -1, 0, 1 \rbrace^3$ | [Stage 4](#stage-4-neighbour-enumeration) |
+| 5 | Voxel read | $c_k$, $n_k$, $\text{valid}_k$ of each neighbour | [Stage 5](#stage-5-voxel-read) |
+| 6 | Plane candidate evaluation | $r_k = n_k \cdot (p - c_k)$ | [Stage 6](#stage-6-plane-candidate-evaluation) |
+| 7 | Best plane selection | $k^\ast = \arg\min_k \lvert r_k \rvert$ | [Stage 7](#stage-7-best-plane-selection) |
+| | **Form its constraint** | | |
+| 8 | Residual | $r = r_{k^\ast}$ if any candidate was usable, else rejected | [Stages 8 and 10](#stages-8-and-10-residual-and-inlier-test) |
+| 9 | Jacobian | $J = [\,(p \times n)^T \;\; n^T\,]$ | [Stage 9](#stage-9-jacobian) |
+| 10 | Inlier test | $\lvert r \rvert < T$, else rejected | [Stages 8 and 10](#stages-8-and-10-residual-and-inlier-test) |
+| | **Running sums** | | |
+| 11 | Accumulation | $H \mathrel{+}= J^T J$, $g \mathrel{+}= J^T r$, cost $\mathrel{+}= r^2$ | [Stage 11](#stage-11-accumulation-of-the-normal-equations) |
+
+**Data on the arrows.** Types and bit widths of all of these are listed in
+[architecture.md](architecture.md#data-definitions).
+
+| Arrow | Data | From | To |
+|---|---|---|---|
+| `q` | one scan point, LiDAR frame | scan buffer | stage 1 |
+| `R, t` | the predicted pose | pose input | stage 1 |
+| `p, i` | the point in the map frame and its voxel index | stages 1 and 3 | stages 4 and 6 |
+| `c_k, n_k, valid_k` | centroid, normal and valid flag of candidate voxel $k$ | voxel map | stages 5 and 6 |
+| `p, n, r` | the point, and the normal and residual of its best plane | stages 1 and 7 | stages 8 to 10 |
+| `J, r` | Jacobian and residual of an inlier | stages 9 and 8 | stage 11 |
+| `H, g, cost, counters` | the running sums and the point counters | stage 11 | host, after the scan |
+
+**Host CPU**
+
+| When | Name | Computes | Section |
+|---|---|---|---|
+| before the scan | Map build | bucket the map points by voxel; centroid $c_k$ and PCA normal $n_k$ per voxel; write the result into the core's voxel map | [Map builder](#map-builder-centroid-and-normal-by-pca) |
+| before the scan | LiDAR scan | write the scan points into the core's scan buffer | |
+| before the scan | Pose prediction | $R, t$ from the IMU or the previous pose; set on the core's pose input | |
+| after the scan | Unpack | 21 packed values to the symmetric 6 x 6 $H$ | [Stage 11](#stage-11-accumulation-of-the-normal-equations) |
+| after the scan | Health checks | enough inliers, $H$ and $g$ finite, condition number of $H$ | [Host side](#host-side-solve-and-update) |
+| after the scan | Solve | $H\,\delta = -g$ | [Host side](#host-side-solve-and-update) |
+| after the scan | Pose update | $R \leftarrow \mathrm{Exp}(\omega)\,R$, $t \leftarrow \mathrm{Exp}(\omega)\,t + \tau$ | [Host side](#host-side-solve-and-update) |
+| after the scan | Convergence test | step small enough? if not, same scan again with the new pose | [Host side](#host-side-solve-and-update) |
 
 ## Notation
 
@@ -188,7 +273,7 @@ unit normal $n_k$ and a valid flag. A descriptor is usable when the flag is
 set and the normal is not the zero vector (a zero normal would give $r = 0$
 for every point and win every search).
 
-## Stage 6: point-to-plane residual
+## Stage 6: plane candidate evaluation
 
 A plane through $c$ with unit normal $n$ is the set of points $x$ with
 $n \cdot (x - c) = 0$. For any point $p$,
@@ -214,9 +299,11 @@ when a point sees several voxels of the same surface, each with a slightly
 different fitted plane, the smallest $\lvert r \rvert$ among them is
 systematically smaller than the true distance.
 
-## Stage 8 and 10: residual and inlier test
+## Stages 8 and 10: residual and inlier test
 
-The residual of the point is $r = r_{k^\ast}$. It is accepted when
+A point for which no neighbour offered a usable candidate has no residual
+and is counted as rejected. Otherwise the residual of the point is
+$r = r_{k^\ast}$. It is accepted when
 
 $$\lvert r \rvert < T$$
 
@@ -275,7 +362,7 @@ host update would have to be the right-multiplicative one. The core and the
 host use the left form throughout; `tests/test_geometry.py` checks $J$
 against finite differences of the actual update.
 
-## Stage 11: normal equations
+## Stage 11: accumulation of the normal equations
 
 Gauss-Newton minimises the sum of squared residuals after a pose correction
 $\delta$, using the linearisation from stage 9:
@@ -409,13 +496,13 @@ $q = (0.1, -0.05, 0.125)$.
 
 | Stage | Computation |
 |---|---|
-| 1 | $p = q = (0.1, -0.05, 0.125)$ |
-| 2, 3 | $f = ((0.1 + 8.25) \cdot 2,\ (-0.05 + 8.25) \cdot 2,\ (0.125 + 2.25) \cdot 2) = (16.7, 16.4, 4.75)$, inside; $i = (16, 16, 4)$; $k = 4 \cdot 1024 + 16 \cdot 32 + 16 = 4624$ |
-| 4, 5 | 27 candidates; only voxel 4624 is valid |
-| 6, 7 | $r = 0 \cdot 0.1 + 0 \cdot (-0.05) + 1 \cdot 0.125 = 0.125$ |
-| 10 | $0.125 < 0.30$: inlier |
-| 9 | $p \times n = (-0.05 \cdot 1 - 0.125 \cdot 0,\ 0.125 \cdot 0 - 0.1 \cdot 1,\ 0.1 \cdot 0 - (-0.05) \cdot 0) = (-0.05, -0.1, 0)$, so $J = (-0.05, -0.1, 0, 0, 0, 1)$ |
-| 11 | $H_{00} = 0.0025$, $H_{01} = 0.005$, $H_{11} = 0.01$, $H_{05} = -0.05$, $H_{15} = -0.1$, $H_{55} = 1$, all others 0; $g = (-0.00625, -0.0125, 0, 0, 0, 0.125)$; cost $= 0.015625$ |
+| 1 Point transform | $p = q = (0.1, -0.05, 0.125)$ |
+| 2, 3 Bounds check, voxel index | $f = ((0.1 + 8.25) \cdot 2,\ (-0.05 + 8.25) \cdot 2,\ (0.125 + 2.25) \cdot 2) = (16.7, 16.4, 4.75)$, inside; $i = (16, 16, 4)$; $k = 4 \cdot 1024 + 16 \cdot 32 + 16 = 4624$ |
+| 4, 5 Neighbour enumeration, voxel read | 27 candidates; only voxel 4624 is valid |
+| 6, 7 Plane candidate evaluation, best plane selection | $r = 0 \cdot 0.1 + 0 \cdot (-0.05) + 1 \cdot 0.125 = 0.125$ |
+| 8, 10 Residual, inlier test | one usable candidate; $0.125 < 0.30$: inlier |
+| 9 Jacobian | $p \times n = (-0.05 \cdot 1 - 0.125 \cdot 0,\ 0.125 \cdot 0 - 0.1 \cdot 1,\ 0.1 \cdot 0 - (-0.05) \cdot 0) = (-0.05, -0.1, 0)$, so $J = (-0.05, -0.1, 0, 0, 0, 1)$ |
+| 11 Accumulation | $H_{00} = 0.0025$, $H_{01} = 0.005$, $H_{11} = 0.01$, $H_{05} = -0.05$, $H_{15} = -0.1$, $H_{55} = 1$, all others 0; $g = (-0.00625, -0.0125, 0, 0, 0, 0.125)$; cost $= 0.015625$ |
 
 With one point $H$ has rank 1, so the host cannot solve for a pose from it;
 that takes many points on at least three differently oriented planes. The

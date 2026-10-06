@@ -55,6 +55,173 @@ The host must supply a valid rotation matrix, a scan buffer holding at least
 `num_points` points, and a map in which `valid` is set only for descriptors
 with a unit normal.
 
+## Data definitions
+
+Every piece of data the core reads, hands from one stage to the next and
+returns, with its type and its width in bits. The widths are those of the
+fixed-point build, which is the one the RTL implements. In the float build
+each of the five number types is a 32-bit IEEE float instead. Types and
+structs are declared in `hls/voxlio_types.hpp`, constants in
+`hls/voxlio_config.hpp`; `rtl/voxlio_pkg.sv` is generated from the latter.
+
+### Number types
+
+| Type | Bits | Fraction bits | One LSB | Range | Holds |
+|---|---:|---:|---|---|---|
+| `coord_t` | 24 | 14 | `2^-14` m = 61 µm | ±512 m | scan points, centroids, pose translation |
+| `normal_t` | 18 | 16 | `2^-16` = 1.5e-5 | ±2 | plane normals, rotation matrix |
+| `compute_t` | 32 | 16 | `2^-16` = 1.5e-5 | ±32768 | residual, Jacobian |
+| `accum_t` | 64 | 32 | `2^-32` | ±2.1e9 | `H`, `g`, cost |
+| `grid_t` | 26 | 14 | `2^-14` voxel | ±2048 voxels | a position in voxel units, before it is truncated to an index |
+
+All five are signed two's complement. The host converts a real value `v` to
+the raw integer `round(v * 2^F)`, saturated to the range, where `F` is the
+number of fraction bits: 0.125 m as `coord_t` is 2048 (`0x000800`), a normal
+component of 1.0 as `normal_t` is 65536 (`0x10000`), and the 0.30 m threshold
+as `compute_t` is 19661. How each type rounds and overflows inside the core
+is under [Numeric modes](#numeric-modes).
+
+### Sizes
+
+| Constant | Value | Gives |
+|---|---|---|
+| `MAX_POINTS` | 32768 | scan buffer depth; a 15-bit point address |
+| `NX`, `NY`, `NZ` | 32, 32, 8 | voxel coordinates `ix`, `iy`, `iz` of 5, 5 and 3 bits |
+| `NUM_VOXELS` | 8192 | voxel map depth; a 13-bit voxel address |
+| `VOXEL_SIZE` | 0.5 m | a grid of 16 x 16 x 4 m |
+| `MAP_X_MIN`, `MAP_Y_MIN`, `MAP_Z_MIN` | -8.25, -8.25, -2.25 m | minimum corner of the grid |
+| `RESIDUAL_THRESHOLD` | 0.30 m | inlier threshold |
+| `NEIGHBOR_RADIUS` | 1 | 27 candidate voxels per point |
+
+### Interface data
+
+What crosses between the host and the core, as declared for `voxlio_core()`:
+
+| Data | Type | Fields | Bits, fixed point | Bytes, float | How many, direction |
+|---|---|---|---:|---:|---|
+| Scan point | `Point3D` | `x`, `y`, `z`: `coord_t` | 72 | 12 | up to `MAX_POINTS`, host to core |
+| Voxel entry | `VoxelEntry` | `cx`, `cy`, `cz`: `coord_t`; `nx`, `ny`, `nz`: `normal_t`; `valid`: flag | 127 | 28 | `NUM_VOXELS`, host to core |
+| Pose | `Pose3D` | `R[9]`: `normal_t`, row-major; `t[3]`: `coord_t` | 234 | 48 | one, host to core |
+| Point count | `uint32_t` | `num_points` | 32 | 4 | one, host to core |
+| Result | `VoxLIOResult` | `H[21]`, `g[6]`, `cost`: `accum_t`; `inlier_count`, `processed_count`, `rejected_count`, `status`: `uint32_t` | 1920 | 128 | one, core to host |
+
+The pose is 162 bits of rotation and 72 of translation. The result is 1344
+bits of `H`, 384 of `g`, 64 of cost and four 32-bit words. `H` is the upper
+triangle packed by columns ([Conventions](#conventions)); the bits of
+`status` are listed under
+[Status word and edge cases](#status-word-and-edge-cases). `valid` is a
+`uint8_t` in C++, where any non-zero value means valid, and a single bit in
+the RTL word. In the float build `VoxelEntry` is 25 bytes of fields padded
+to 28.
+
+The fixed-point column is the packed width, which is what the RTL uses. How
+Vitis HLS pads the structs on its AXI ports is not known yet
+([Not yet known](#not-yet-known)).
+
+### Memory words and ports in the RTL
+
+The RTL keeps the scan and the map in two RAMs inside the core
+([rtl.md](rtl.md)). The host fills them through one write port each:
+`scan_waddr` (15 bits) with `scan_wdata`, and `map_waddr` (13 bits) with
+`map_wdata`. Fields are packed with the first field in the least significant
+bits.
+
+Scan buffer: 32768 words of 72 bits, 2.36 Mbit. Word `i` is point `i`.
+
+| Bits | Field | Type |
+|---|---|---|
+| 23:0 | `x` | `coord_t` |
+| 47:24 | `y` | `coord_t` |
+| 71:48 | `z` | `coord_t` |
+
+Voxel map: 8192 words of 127 bits, 1.04 Mbit. Word `k` is voxel `k`, with
+`k = iz * NX * NY + iy * NX + ix`. Because `NX` and `NY` are powers of two,
+that is the bit concatenation `{iz, iy, ix}` (3 + 5 + 5 bits).
+
+| Bits | Field | Type |
+|---|---|---|
+| 23:0 | `cx` | `coord_t` |
+| 47:24 | `cy` | `coord_t` |
+| 71:48 | `cz` | `coord_t` |
+| 89:72 | `nx` | `normal_t` |
+| 107:90 | `ny` | `normal_t` |
+| 125:108 | `nz` | `normal_t` |
+| 126 | `valid` | 1 bit |
+
+The pose, the point count and the result are plain ports, not memories:
+
+| Port | Bits | Layout |
+|---|---:|---|
+| `pose_r` | 162 | `R` row-major, element `i` in bits `18*i +: 18` |
+| `pose_t` | 72 | `t`, element `i` in bits `24*i +: 24` |
+| `num_points` | 32 | unsigned |
+| `h_flat` | 1344 | packed `H[k]` in bits `64*k +: 64` |
+| `g_flat` | 384 | `g[i]` in bits `64*i +: 64` |
+| `cost` | 64 | `accum_t` |
+| `inlier_count`, `processed_count`, `rejected_count`, `status` | 32 each | unsigned |
+
+### Data between stages
+
+These symbols label the arrows of the flowchart in
+[mathematics.md](mathematics.md#data-flow). Names in brackets are the RTL
+signals.
+
+| Data | Symbol | From | To | Type | Bits |
+|---|---|---|---|---|---:|
+| Scan point | `q` | scan buffer | stage 1 | 3 x `coord_t` | 72 |
+| Pose (`pose_r`, `pose_t`) | `R`, `t` | host | stage 1 | 9 x `normal_t`, 3 x `coord_t` | 162 + 72 |
+| Map-frame point (`px`, `py`, `pz`) | `p` | stage 1 | stages 2, 3, 6, 9 | 3 x `coord_t` | 72 |
+| Grid coordinate | `f` | inside stages 2 and 3 | | 3 x `grid_t` | 78 |
+| Voxel index (`ix`, `iy`, `iz`) | `i` | stage 3 | stage 4 | unsigned | 5 + 5 + 3 |
+| Candidate address (`map_raddr`) | `k` | stage 4 | voxel map | unsigned | 13 |
+| Voxel entry (`map_rdata`) | `c_k`, `n_k`, `valid_k` | voxel map | stages 5, 6 | map word | 127 |
+| Candidate residual | `r_k` | stage 6 | stage 7 | `compute_t` | 32 |
+| Best residual (`best_r`) | `r` | stage 7 | stages 8, 10, 11 | `compute_t` | 32 |
+| Best normal (`best_nx`, `best_ny`, `best_nz`) | `n` | stage 7 | stage 9 | 3 x `normal_t` | 54 |
+| Jacobian (`j_flat`) | `J` | stage 9 | stage 11 | 6 x `compute_t` | 192 |
+| Normal equations (`h_flat`, `g_flat`, `cost`) | `H`, `g`, cost | stage 11 | host | 28 x `accum_t` | 1792 |
+| Counters and status | | stage 11, control | host | 4 x `uint32_t` | 128 |
+
+Three one-bit flags steer the control: in grid (stage 2), found (stage 7,
+tested in stage 8) and inlier (stage 10). In the C++ model `ix`, `iy` and
+`iz` are plain `int`, and stage 7 hands on the whole selected `VoxelEntry`;
+the RTL keeps only its normal, which is all stage 9 uses.
+
+### Widths inside the arithmetic
+
+A product or sum of stored values is kept exact and is narrowed once, where
+the result is stored. The intermediate widths below are the RTL's:
+
+| Stage | Exact intermediate | Bits | Stored as |
+|---|---|---:|---|
+| 1 Point transform | `R * q`, one product | 42 | |
+| | three products plus `t` | 45 | `coord_t`: 16 bits dropped, rounded, saturated |
+| 2, 3 Bounds check, voxel index | `p - m` | 25 | |
+| | times `1 / s` | 49 | `grid_t`: 14 bits dropped, truncated, saturated |
+| 6 Plane candidate evaluation | `p - c` | 25 | |
+| | `n * (p - c)`, one product | 43 | |
+| | sum of three products | 45 | `compute_t`: 14 bits dropped, rounded, saturated |
+| 9 Jacobian | `p * n`, one product | 42 | |
+| | difference of two products | 43 | `compute_t`: 14 bits dropped, rounded, saturated |
+| 11 Accumulation | `J * J`, `J * r`, `r * r` | 44, 40, 36 | added into 64-bit `accum_t`, which wraps |
+
+The accumulator multiplies the low 22 bits of each Jacobian entry and the
+low 18 bits of the residual, which loses nothing for any value that can
+reach it ([rtl.md](rtl.md#fixed-point-mapping)).
+
+### Test vector files
+
+`scripts/export_vectors.py` writes each case to `data/synthetic/<case>/` as
+little-endian binary. The fixed-point testbenches convert the values when
+they load them, rounding to nearest and saturating.
+
+| File | Element | Shape | Content |
+|---|---|---|---|
+| `scan.bin` | float32 | (`num_points`, 3) | scan points, LiDAR frame |
+| `voxel_desc.bin` | float32 | (8192, 6) | `cx cy cz nx ny nz` per voxel |
+| `voxel_valid.bin` | uint8 | (8192,) | valid flag per voxel |
+| `pose.bin` | float32 | (12,) | predicted `R` row-major, then `t` |
+
 ## Status word and edge cases
 
 | Bit | Name | Meaning |

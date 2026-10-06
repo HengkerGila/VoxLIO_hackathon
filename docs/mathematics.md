@@ -78,7 +78,9 @@ the Jacobian (stage 9) in the code, because a rejected point needs no
 Jacobian; the result is the same.
 
 The host closes the loop: it solves a 6 x 6 system, moves the pose and, if
-the step was not small, runs the same scan again with the new pose.
+the step was not small, runs the same scan again with the new pose. The
+step-size test itself is not written yet: the scripts in this repository run
+a fixed five iterations (`scripts/pose_convergence.py`).
 
 ### Stage guide
 
@@ -133,7 +135,7 @@ symbols are defined under [Notation](#notation).
 | after the scan | Health checks | enough inliers, $H$ and $g$ finite, condition number of $H$ | [Host side](#host-side-solve-and-update) |
 | after the scan | Solve | $H\,\delta = -g$ | [Host side](#host-side-solve-and-update) |
 | after the scan | Pose update | $R \leftarrow \mathrm{Exp}(\omega)\,R$, $t \leftarrow \mathrm{Exp}(\omega)\,t + \tau$ | [Host side](#host-side-solve-and-update) |
-| after the scan | Convergence test | step small enough? if not, same scan again with the new pose | [Host side](#host-side-solve-and-update) |
+| after the scan | Convergence test | step small enough? if not, same scan again with the new pose (planned; the scripts run five fixed iterations) | [Host side](#host-side-solve-and-update) |
 
 ## Notation
 

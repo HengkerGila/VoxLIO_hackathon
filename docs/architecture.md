@@ -211,9 +211,9 @@ reach it ([rtl.md](rtl.md#fixed-point-mapping)).
 
 ### Test vector files
 
-`scripts/export_vectors.py` writes each case to `data/synthetic/<case>/` as
-little-endian binary. The fixed-point testbenches convert the values when
-they load them, rounding to nearest and saturating.
+`scripts/export_vectors.py` writes each case to `data/synthetic/<case>/`.
+The inputs are little-endian binary; the fixed-point testbenches convert the
+values when they load them, rounding to nearest and saturating.
 
 | File | Element | Shape | Content |
 |---|---|---|---|
@@ -221,6 +221,8 @@ they load them, rounding to nearest and saturating.
 | `voxel_desc.bin` | float32 | (8192, 6) | `cx cy cz nx ny nz` per voxel |
 | `voxel_valid.bin` | uint8 | (8192,) | valid flag per voxel |
 | `pose.bin` | float32 | (12,) | predicted `R` row-major, then `t` |
+| `expected_f32.txt`, `expected_f64.txt` | text | 32 lines | golden result: the four counters, then `H 0..20`, `g 0..5` and `cost` as C99 hex floats |
+| `meta.txt` | text | `key value` lines | grid configuration, `num_points`, scene and diagnostics; the testbench refuses a case whose grid differs from the build |
 
 ## Status word and edge cases
 

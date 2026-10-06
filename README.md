@@ -42,12 +42,55 @@ make test                 # Python tests, float build, fixed-point build, RTL si
 
 Any other OS: `docker build -t voxlio .` then `docker run --rm -it -v "$PWD":/work voxlio make test`.
 
-What `make test` needs: Python 3 with numpy and pytest (`requirements.txt`),
-g++ with C++14, make, git (the fixed-point build clones the Apache-licensed
-`ap_fixed` headers into `third_party/`), and Verilator 5 for the RTL
-simulation (Ubuntu 22.04 ships 4.x, which is too old; use 24.04, the Docker
-image, or oss-cad-suite). Quartus Prime Lite is the one manual install and
-is only needed for `make quartus`.
+### Dependencies
+
+| Tool | Version | Needed for | Ubuntu / Debian package |
+|---|---|---|---|
+| Python | 3.10 or newer | golden model, tests, scripts | `python3`, `python3-pip`, `python3-venv` |
+| numpy, pytest | numpy 1.24 to 2.x, pytest 7+ | same | `pip install -r requirements.txt` (or `python3-numpy python3-pytest`) |
+| g++ | C++14 capable (GCC 9+, Clang 10+) | C++ reference, testbenches, Verilator model | `build-essential` |
+| GNU make | 4.x | every target | `build-essential` |
+| git | any | cloning the `ap_fixed` headers on first `make fixed` | `git` |
+| Verilator | **5.x** (tested 5.020) | `make rtl`, part of `make test` | `verilator` on Ubuntu 24.04; 22.04 ships 4.x, see below |
+| Icarus Verilog | 12 (optional) | second syntax check of the RTL | `iverilog` |
+| Quartus Prime Lite | 20.1 or newer, Cyclone V support | `make quartus` only | manual install from Intel; not in the script or the image |
+
+The `ap_fixed` headers (Xilinx HLS arbitrary precision types, Apache 2.0)
+are not a system package: the first `make fixed` or `make rtl` clones them at
+a pinned revision into `third_party/ap_types`, which is git-ignored. On a
+machine that has Vitis HLS, `AP_TYPES_INC=$XILINX_HLS/include make test`
+uses its headers instead.
+
+**Install by platform.**
+
+- Ubuntu 24.04, Debian 12: `scripts/setup_ubuntu.sh` does everything above
+  except Quartus. Add `--venv` to keep the Python packages in `./.venv`
+  (then `source .venv/bin/activate` before `make`).
+- Ubuntu 22.04: run the script, then replace the 4.x Verilator with a 5.x
+  one: either the prebuilt
+  [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build/releases)
+  (unpack, put its `bin` on your PATH) or a build from source
+  (`git clone https://github.com/verilator/verilator && cd verilator && git checkout v5.020 && autoconf && ./configure && make -j4 && sudo make install`).
+- Windows, macOS, anything else: use the Docker image. `docker build -t voxlio .`
+  once, then `docker run --rm -it -v "$PWD":/work voxlio make test`. The
+  image holds every tool except Quartus; your working copy is mounted, so
+  results land in your tree.
+- Quartus Prime Lite (free): install from Intel with the Cyclone V device
+  support, make sure `quartus_sh` is on the PATH, then `make quartus`.
+
+**Check before you start.** `make check` prints one line per tool with its
+version, flags anything missing or too old, and ends with `ready: run make test`
+or the list to fix.
+
+**If something fails.**
+
+- `verilator: TOO OLD` from `make check`: see the Ubuntu 22.04 note above.
+- `ap_fixed.h not found`: no network for the clone; copy `third_party/ap_types`
+  from a teammate, or point `AP_TYPES_INC` at a Vitis HLS include directory.
+- `pip` refuses to install system-wide (`externally-managed-environment`):
+  use `scripts/setup_ubuntu.sh --venv` or `pip install --user`.
+- `make test` is slow the first time: the fixed-point and Verilator builds
+  compile large templates; about 3 minutes on a 4-core laptop, seconds after.
 
 Other targets:
 

@@ -16,16 +16,15 @@ flowchart TD
     %% opposite arrows form a loop, and the layout then depends on the
     %% Mermaid version.
     subgraph HOST["host (testbench today, HPS later)"]
-        W2["map write port"]
         W1["scan write port"]
-        P["pose"]
-        C["num_points, start"]
+        W2["map write port"]
+        C["control write:<br/>pose, num_points, start"]
     end
 
     subgraph CORE["voxlio_core.sv"]
+        S[("scan buffer RAM<br/>MAX_POINTS x 72")]
         M[("voxel map RAM<br/>8192 x 127")]
-        S[("scan RAM<br/>MAX_POINTS x 72")]
-        F["FSM<br/>one point in flight"]
+        F["control<br/>FSM, one point in flight;<br/>pose_r, pose_t pass through"]
         subgraph PIPE["datapath"]
             T["voxlio_transform<br/>3 stages"]
             G["voxlio_grid<br/>2 stages"]
@@ -33,16 +32,17 @@ flowchart TD
             J["voxlio_jacobian<br/>3 stages"]
             A["voxlio_accumulate<br/>28 multipliers, 2 stages"]
         end
+        RES[("result registers<br/>H, g, cost, 3 counters, status")]
     end
 
     R["host reads the result"]
 
     W1 -- "scan_we, scan_waddr[14:0],<br/>scan_wdata[71:0]" --> S
     W2 -- "map_we, map_waddr[12:0],<br/>map_wdata[126:0]" --> M
-    P -- "pose_r[161:0],<br/>pose_t[71:0]" --> T
-    C -- "start,<br/>num_points[31:0]" --> F
+    C -- "start, num_points[31:0],<br/>pose_r[161:0], pose_t[71:0]" --> F
 
     F -- "scan_raddr[14:0]" --> S
+    F -- "pose_r[161:0],<br/>pose_t[71:0]" --> T
     F <-. "start, valid, clear strobes /<br/>in_grid, found, best_r" .-> PIPE
     S -- "scan_rdata[71:0]" --> T
     T -- "p = px, py, pz<br/>[23:0] each" --> G
@@ -53,15 +53,25 @@ flowchart TD
     Q -- "best_nx, best_ny,<br/>best_nz [17:0] each" --> J
     Q -- "best_r[31:0]" --> A
     J -- "j_flat[191:0]" --> A
-    A -- "h_flat[1343:0], g_flat[383:0],<br/>cost[63:0], inlier_count[31:0]" --> R
-    F -- "processed_count, rejected_count,<br/>status [31:0] each; busy, done" --> R
+    A -- "h_flat[1343:0], g_flat[383:0],<br/>cost[63:0], inlier_count[31:0]" --> RES
+    F -- "processed_count, rejected_count,<br/>status [31:0] each; busy, done" --> RES
+    RES -- "all result words,<br/>stable from done to the next start" --> R
 ```
 
+The host sees four blocks: the scan buffer RAM, the voxel map RAM, the
+control block and the result registers. It fills the first three through
+the two write ports and the control inputs, and reads only the fourth.
 Every arrow is labelled with the signals it carries, named as in
 `voxlio_core.sv`, with their bit ranges. A double-headed arrow is a two-way
 link: the address to the map RAM and the word that comes back, or the FSM's
 strobes to the datapath and the flags it gets back (the FSM uses `found` and
-`best_r` for stages 8 and 10). Clock and reset are not drawn. The fields
+`best_r` for stages 8 and 10). Clock and reset are not drawn. Two of the
+four blocks are groupings rather than modules: the control block is the FSM
+in `voxlio_core.sv` plus the `pose_r` and `pose_t` inputs, which it does
+not register but passes straight to the transform (the host keeps them
+stable while `busy`), and the result registers are the `H`, `g`, cost and
+`inlier_count` registers inside `voxlio_accumulate` together with the
+`processed_count`, `rejected_count` and `status` registers of the FSM. The fields
 inside the 72-bit scan word, the 127-bit map word, the pose and the result
 buses are laid out in
 [architecture.md](architecture.md#memory-words-and-ports-in-the-rtl).

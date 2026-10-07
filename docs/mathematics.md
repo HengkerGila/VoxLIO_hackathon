@@ -20,9 +20,9 @@ flowchart TD
     end
 
     subgraph CORE["VoxLIO core"]
-        VM[("Voxel map")]
         SB[("Scan buffer")]
-        PIN[/"Pose input"/]
+        VM[("Voxel map")]
+        CTL["Control<br/>pose R, t; num_points; start<br/>FSM, one point at a time"]
         subgraph LOCATE["Locate the point"]
             direction LR
             S1["1 Point transform"] --> S2{{"2 Bounds check"}} --> S3["3 Voxel index"]
@@ -35,42 +35,52 @@ flowchart TD
             direction LR
             S8{{"8 Residual"}} --> S10{{"10 Inlier test"}} --> S9["9 Jacobian"]
         end
-        S11["11 Accumulation"]
+        ACC[("Accumulation / result registers<br/>11 H, g, cost; counters, status")]
+        CTL -- "point index" --> SB
         SB -- "q" --> LOCATE
-        PIN -- "R, t" --> LOCATE
+        CTL -- "R, t" --> LOCATE
         VM -- "c_k, n_k, valid_k" --> SEARCH
         LOCATE -- "p, i" --> SEARCH
         SEARCH -- "p, n, r" --> CONSTRAINT
-        CONSTRAINT -- "J, r" --> S11
+        CONSTRAINT -- "J, r" --> ACC
+        CTL -- "processed, rejected,<br/>status" --> ACC
     end
 
-    OUT[/"H, g, cost, counters"/]
+    RD[/"Host reads the result"/]
 
     subgraph AFTER["Host CPU, after the scan"]
         direction LR
         U["Unpack"] --> HC["Health<br/>checks"] --> SV["Solve"] --> PU["Pose<br/>update"] --> CT{{"Convergence<br/>test"}}
     end
 
-    MAP -- write --> VM
-    SCAN -- write --> SB
-    POSE -- set --> PIN
-    S11 --> OUT --> AFTER
+    MAP -- "write c_k, n_k, valid_k<br/>for every voxel" --> VM
+    SCAN -- "write q for every point" --> SB
+    POSE -- "set R, t, num_points;<br/>start" --> CTL
+    ACC -- "read H, g, cost,<br/>counters, status" --> RD
+    RD --> AFTER
     AFTER -- converged --> EST(["Pose estimate"])
     AFTER -- not yet --> AGAIN(["Same scan again,<br/>new pose"])
 ```
 
-Each host block feeds one input of the core: the map build writes the voxel
-map, the LiDAR scan is written into the scan buffer, and the predicted pose
-is set on the pose input. All of this happens before the core starts, and
-the core only reads them. In the RTL the two buffers are RAMs inside the
-core ([rtl.md](rtl.md)); the HLS build reads them through AXI master ports
+The core has four blocks the host talks to: the scan buffer, the voxel map,
+the control block and the accumulation (result) registers. Each host block
+feeds exactly one of them: the map build writes the voxel map, the LiDAR
+scan is written into the scan buffer, and the predicted pose, the point
+count and the start command go to the control block. All of this happens
+before the core starts, and the core only reads them. After the scan the
+host reads the fourth block, the result registers, and nothing else. In the
+RTL the two buffers are RAMs inside the core ([rtl.md](rtl.md)); the HLS
+build reads them through AXI master ports
 ([architecture.md](architecture.md)).
 
-The core then runs stages 1 to 11 for every point of the scan: stages 1 to 3
-locate the point in the grid, stages 4 to 7 find the plane it lies on,
-stages 8 to 10 turn that match into a constraint, and stage 11 adds it to
-the running sums. The label on an arrow is the data that travels along it.
-Only the sums and the point counters go back to the host.
+The control block then steps through the scan one point at a time and runs
+stages 1 to 11 for each: stages 1 to 3 locate the point in the grid, stages
+4 to 7 find the plane it lies on, stages 8 to 10 turn that match into a
+constraint, and stage 11 adds it to the running sums in the result
+registers. The control block also keeps the processed and rejected counters
+and writes the status word there. The label on an arrow is the data that
+travels along it. Only the sums, the counters and the status go back to the
+host.
 
 Hexagons are tests: a point that fails stage 2, 8 or 10 is counted as
 rejected and goes no further. The inlier test (stage 10) is applied before
@@ -94,7 +104,7 @@ symbols are defined under [Notation](#notation).
 | | **Inputs** | | |
 | | Voxel map | holds $c_k$, $n_k$, $\text{valid}_k$ for all 8192 voxels; written by the host, read by stage 5 | [What "plane" means](#what-plane-means-in-stages-4-to-7) |
 | | Scan buffer | holds the scan points $q$; written by the host, read once per point | |
-| | Pose input | the predicted pose $R, t$; set by the host, constant during the scan | |
+| | Control | the predicted pose $R, t$, `num_points` and `start`, set by the host and constant during the scan; the state machine that steps through the points and counts the processed and rejected ones | |
 | | **Locate the point** | | |
 | 1 | Point transform | $p = R\,q + t$ | [Stage 1](#stage-1-point-transform) |
 | 2 | Bounds check | $0 \le f_a < N_a$ with $f = (p - m)/s$, else rejected | [Stages 2 and 3](#stages-2-and-3-bounds-check-and-voxel-index) |
@@ -110,6 +120,7 @@ symbols are defined under [Notation](#notation).
 | 10 | Inlier test | $\lvert r \rvert < T$, else rejected | [Stages 8 and 10](#stages-8-and-10-residual-and-inlier-test) |
 | | **Running sums** | | |
 | 11 | Accumulation | $H \mathrel{+}= J^T J$, $g \mathrel{+}= J^T r$, cost $\mathrel{+}= r^2$ | [Stage 11](#stage-11-accumulation-of-the-normal-equations) |
+| | Result registers | $H$ (21 values), $g$ (6), cost, inlier, processed and rejected counts, status; hold their values after the scan until the host reads them | [Status word](architecture.md#status-word-and-edge-cases) |
 
 **Data on the arrows.** Types and bit widths of all of these are listed in
 [architecture.md](architecture.md#data-definitions).
@@ -117,12 +128,13 @@ symbols are defined under [Notation](#notation).
 | Arrow | Data | From | To |
 |---|---|---|---|
 | `q` | one scan point, LiDAR frame | scan buffer | stage 1 |
-| `R, t` | the predicted pose | pose input | stage 1 |
+| `R, t` | the predicted pose | control block | stage 1 |
 | `p, i` | the point in the map frame and its voxel index | stages 1 and 3 | stages 4 and 6 |
 | `c_k, n_k, valid_k` | centroid, normal and valid flag of candidate voxel $k$ | voxel map | stages 5 and 6 |
 | `p, n, r` | the point, and the normal and residual of its best plane | stages 1 and 7 | stages 8 to 10 |
 | `J, r` | Jacobian and residual of an inlier | stages 9 and 8 | stage 11 |
-| `H, g, cost, counters` | the running sums and the point counters | stage 11 | host, after the scan |
+| `processed, rejected, status` | the point counters and the status word | control block | result registers |
+| `H, g, cost, counters, status` | the running sums, the counters and the status | result registers | host, after the scan |
 
 **Host CPU**
 
@@ -130,7 +142,7 @@ symbols are defined under [Notation](#notation).
 |---|---|---|---|
 | before the scan | Map build | bucket the map points by voxel; centroid $c_k$ and PCA normal $n_k$ per voxel; write the result into the core's voxel map | [Map builder](#map-builder-centroid-and-normal-by-pca) |
 | before the scan | LiDAR scan | write the scan points into the core's scan buffer | |
-| before the scan | Pose prediction | $R, t$ from the IMU or the previous pose; set on the core's pose input | |
+| before the scan | Pose prediction | $R, t$ from the IMU or the previous pose; set on the core's control block together with `num_points`, then `start` | |
 | after the scan | Unpack | 21 packed values to the symmetric 6 x 6 $H$ | [Stage 11](#stage-11-accumulation-of-the-normal-equations) |
 | after the scan | Health checks | enough inliers, $H$ and $g$ finite, condition number of $H$ | [Host side](#host-side-solve-and-update) |
 | after the scan | Solve | $H\,\delta = -g$ | [Host side](#host-side-solve-and-update) |
